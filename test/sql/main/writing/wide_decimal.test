@@ -1,0 +1,209 @@
+# name: test/sql/main/writing/wide_decimal.test
+# description: DuckDB decimals can have more than 38 digits, Delta's cannot: a wider one is refused by name, never narrowed
+# group: [writing]
+
+require parquet
+
+require delta
+
+require notwindows
+
+# The session default: decimal arithmetic widens past 38 digits
+query I
+SELECT typeof(1::DECIMAL(38, 2) + 1::DECIMAL(38, 2));
+----
+DECIMAL(39,2)
+
+statement ok
+ATTACH '{TEMP_DIR}/wide_decimal_refused' AS refused (TYPE delta);
+
+# -----------------------------------------------------------------------------
+# CREATE TABLE
+#
+
+statement error
+CREATE TABLE refused.refused (d DECIMAL(50, 2));
+----
+Delta CREATE TABLE does not support column 'd' of type DECIMAL(50,2): Delta decimals support at most 38 digits of precision. Use a decimal of at most 38 digits instead, e.g. DECIMAL(38,2).
+
+statement error
+CREATE TABLE refused.refused (d DECIMAL(39, 0));
+----
+Delta CREATE TABLE does not support column 'd' of type DECIMAL(39,0): Delta decimals support at most 38 digits of precision
+
+# Kernel takes the precision as a byte: 266 must not arrive there as 10
+statement error
+CREATE TABLE refused.refused (d DECIMAL(266, 2));
+----
+Delta CREATE TABLE does not support column 'd' of type DECIMAL(266,2): Delta decimals support at most 38 digits of precision
+
+statement error
+CREATE TABLE refused.refused (d DECIMAL(256, 0));
+----
+Delta CREATE TABLE does not support column 'd' of type DECIMAL(256,0): Delta decimals support at most 38 digits of precision
+
+# A scale no Delta decimal can have either
+statement error
+CREATE TABLE refused.refused (d DECIMAL(100, 60));
+----
+of type DECIMAL(100,60): Delta decimals support at most 38 digits of precision. Use a decimal of at most 38 digits instead, e.g. DECIMAL(38,38).
+
+# Nested
+statement error
+CREATE TABLE refused.refused (i INTEGER, s STRUCT(a INTEGER, b DECIMAL(40, 3)));
+----
+does not support column 's' of type STRUCT(a INTEGER, b DECIMAL(40,3)) (it holds a DECIMAL(40,3)): Delta decimals support at most 38 digits of precision
+
+statement error
+CREATE TABLE refused.refused (l DECIMAL(40, 3)[]);
+----
+does not support column 'l' of type DECIMAL(40,3)[] (it holds a DECIMAL(40,3)): Delta decimals support at most 38 digits of precision
+
+statement error
+CREATE TABLE refused.refused (m MAP(VARCHAR, DECIMAL(300, 3)));
+----
+(it holds a DECIMAL(300,3)): Delta decimals support at most 38 digits of precision
+
+# As a partition column
+statement error
+CREATE TABLE refused.refused (i INTEGER, d DECIMAL(266, 2)) PARTITIONED BY (d);
+----
+does not support column 'd' of type DECIMAL(266,2): Delta decimals support at most 38 digits of precision
+
+# -----------------------------------------------------------------------------
+# CREATE TABLE AS and COPY TO: the type is the query's, and arithmetic on 38 digit decimals is wider than 38 digits
+#
+
+statement error
+CREATE TABLE refused.refused AS SELECT 1::DECIMAL(38, 2) + 1::DECIMAL(38, 2) AS d;
+----
+Delta CREATE TABLE AS does not support column 'd' of type DECIMAL(39,2): Delta decimals support at most 38 digits of precision. Use a decimal of at most 38 digits instead, e.g. DECIMAL(38,2).
+
+statement error
+CREATE TABLE refused.refused AS SELECT 1 AS i, 1::DECIMAL(266, 2) AS d;
+----
+does not support column 'd' of type DECIMAL(266,2): Delta decimals support at most 38 digits of precision
+
+statement error
+COPY (SELECT 1::DECIMAL(50, 2) AS d) TO '{TEMP_DIR}/wide_decimal_copy' (FORMAT delta);
+----
+Delta COPY TO does not support column 'd' of type DECIMAL(50,2): Delta decimals support at most 38 digits of precision. Use a decimal of at most 38 digits instead, e.g. DECIMAL(38,2).
+
+statement error
+COPY (SELECT 1 AS i, 1::DECIMAL(266, 2) AS d) TO '{TEMP_DIR}/wide_decimal_copy' (FORMAT delta, PARTITION_BY (d));
+----
+does not support column 'd' of type DECIMAL(266,2): Delta decimals support at most 38 digits of precision
+
+# Nothing was created by any of the refused statements
+statement error
+SELECT * FROM refused.refused;
+----
+does not exist
+
+statement error
+SELECT * FROM delta_scan('{TEMP_DIR}/wide_decimal_copy');
+----
+
+# The cast the error asks for works
+statement ok
+CREATE TABLE refused.refused AS SELECT (1::DECIMAL(38, 2) + 1::DECIMAL(38, 2))::DECIMAL(38, 2) AS d;
+
+query II
+SELECT d, typeof(d) FROM refused.refused;
+----
+2.00	DECIMAL(38,2)
+
+# -----------------------------------------------------------------------------
+# INSERT of a wide decimal into a Delta decimal is DuckDB's own cast: exact when the value fits, an error when not
+#
+
+statement ok
+ATTACH '{TEMP_DIR}/wide_decimal_insert' AS ins (TYPE delta);
+
+statement ok
+CREATE TABLE ins.ins (id INTEGER, d DECIMAL(38, 2)) PARTITIONED BY (id);
+
+# DECIMAL(39,2) and DECIMAL(50,2) expressions, from a scan so that the casts run with the insert
+statement ok
+INSERT INTO ins.ins SELECT range::INTEGER, range::DECIMAL(38, 2) + 0.25::DECIMAL(38, 2) FROM range(3);
+
+statement ok
+INSERT INTO ins.ins SELECT 3, 999999999999999999999999999999999999.99::DECIMAL(50, 2) - range FROM range(1);
+
+query II
+SELECT id, d FROM ins.ins ORDER BY id;
+----
+0	0.25
+1	1.25
+2	2.25
+3	999999999999999999999999999999999999.99
+
+statement error
+INSERT INTO ins.ins SELECT 4, 999999999999999999999999999999999999.99::DECIMAL(38, 2) + 0.01::DECIMAL(38, 2) + range FROM range(1);
+----
+to type DECIMAL(38,2) failed: value is out of range
+
+statement error
+INSERT INTO ins.ins SELECT 4, 12345678901234567890123456789012345678901234567890.12::DECIMAL(60, 2) + range FROM range(1);
+----
+to type DECIMAL(38,2) failed: value is out of range
+
+# HUGEINT holds 39 digits
+statement error
+INSERT INTO ins.ins SELECT 4, 170141183460469231731687303715884105727::HUGEINT - range FROM range(1);
+----
+Could not cast value 170141183460469231731687303715884105727 to DECIMAL(38,2)
+
+query I
+SELECT count(*) FROM ins.ins;
+----
+4
+
+# -----------------------------------------------------------------------------
+# A filter that compares a Delta decimal with a wide one is never handed to kernel as a narrowed literal
+#
+
+query I
+SELECT id FROM ins.ins WHERE d < 2.5::DECIMAL(50, 2) ORDER BY id;
+----
+0
+1
+2
+
+query I
+SELECT id FROM ins.ins WHERE d = 999999999999999999999999999999999999.99::DECIMAL(50, 2);
+----
+3
+
+# The constant does not fit the column's type
+query I
+SELECT id FROM ins.ins WHERE d < 12345678901234567890123456789012345678901234567890.12::DECIMAL(60, 2) ORDER BY id;
+----
+0
+1
+2
+3
+
+query I
+SELECT id FROM ins.ins WHERE d > 12345678901234567890123456789012345678901234567890.12::DECIMAL(60, 2);
+----
+
+query I
+SELECT id FROM ins.ins WHERE d >= -12345678901234567890123456789012345678901234567890.12::DECIMAL(266, 2) ORDER BY id;
+----
+0
+1
+2
+3
+
+# A wide expression over the column
+query I
+SELECT id FROM ins.ins WHERE d + d > 4 ORDER BY id;
+----
+2
+3
+
+query II
+SELECT typeof(d + d), d + d FROM ins.ins WHERE id = 3;
+----
+DECIMAL(39,2)	1999999999999999999999999999999999999.98
