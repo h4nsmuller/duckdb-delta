@@ -18,9 +18,9 @@ class DeltaTransactionManager : public TransactionManager {
 public:
 	DeltaTransactionManager(AttachedDatabase &db_p, DeltaCatalog &delta_catalog);
 
-	Transaction &StartTransaction(ClientContext &context) override;
+	Transaction &StartTransaction(Context &context, MetaTransaction &meta_transaction) override;
 	ErrorData CommitTransaction(ClientContext &context, Transaction &transaction) override;
-	void RollbackTransaction(Transaction &transaction) override;
+	void RollbackTransaction(ClientContext &context, Transaction &transaction) override;
 
 	void Checkpoint(ClientContext &context, bool force = false) override;
 

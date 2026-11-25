@@ -8,7 +8,7 @@ DeltaTransactionManager::DeltaTransactionManager(AttachedDatabase &db_p, DeltaCa
     : TransactionManager(db_p), delta_catalog(delta_catalog) {
 }
 
-Transaction &DeltaTransactionManager::StartTransaction(ClientContext &context) {
+Transaction &DeltaTransactionManager::StartTransaction(Context &context, MetaTransaction &) {
 	auto transaction = make_uniq<DeltaTransaction>(delta_catalog, *this, context);
 	transaction->Start();
 	auto &result = *transaction;
@@ -17,9 +17,9 @@ Transaction &DeltaTransactionManager::StartTransaction(ClientContext &context) {
 	return result;
 }
 
-static ErrorData HandleConflict(DeltaTransaction &transaction, ErrorData &original_error) {
+static ErrorData HandleConflict(ClientContext &context, DeltaTransaction &transaction, ErrorData &original_error) {
 	try {
-		transaction.CleanUpFiles();
+		transaction.CleanUpFiles(context);
 	} catch (std::exception &ex) {
 		ErrorData new_error(ex);
 		string new_message = StringUtil::Format(
@@ -37,16 +37,16 @@ ErrorData DeltaTransactionManager::CommitTransaction(ClientContext &context, Tra
 		delta_transaction.Commit(context);
 	} catch (std::exception &ex) {
 		ErrorData err(ex);
-		return HandleConflict(delta_transaction, err);
+		return HandleConflict(context, delta_transaction, err);
 	}
 	lock_guard<mutex> l(transaction_lock);
 	transactions.erase(transaction);
 	return ErrorData();
 }
 
-void DeltaTransactionManager::RollbackTransaction(Transaction &transaction) {
+void DeltaTransactionManager::RollbackTransaction(ClientContext &context, Transaction &transaction) {
 	auto &delta_transaction = transaction.Cast<DeltaTransaction>();
-	delta_transaction.Rollback();
+	delta_transaction.Rollback(context);
 	lock_guard<mutex> l(transaction_lock);
 	transactions.erase(transaction);
 }

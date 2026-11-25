@@ -169,7 +169,8 @@ static ffi::ExclusiveEngineBuilder *CreateBuilder(ClientContext &context, const 
 	unique_ptr<KeyValueSecretReader> matched_secret_reader;
 	if (secret_match.HasMatch()) {
 		matched_secret = &dynamic_cast<const KeyValueSecret &>(*secret_match.secret_entry->secret);
-		matched_secret_reader = make_uniq<KeyValueSecretReader>(*matched_secret, *context.client_data->file_opener);
+		matched_secret_reader =
+		    make_uniq<KeyValueSecretReader>(*matched_secret, *context.GetContext().TryGetFileOpener());
 	}
 
 	// A GCS bearer token only reaches object_store's native GCS store; the S3-compatible endpoint

@@ -12,6 +12,7 @@
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/transaction/transaction.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 class DeltaCatalog;
@@ -24,14 +25,30 @@ struct DeltaMultiFileColumnDefinition;
 
 enum class DeltaTransactionState { TRANSACTION_NOT_YET_STARTED, TRANSACTION_STARTED, TRANSACTION_FINISHED };
 
-class DeltaTransaction : public Transaction {
+class DeltaTransaction;
+
+//! Makes the client context available to CommitCallback for the duration of a kernel commit call
+class CommitContextScope {
 public:
-	DeltaTransaction(DeltaCatalog &delta_catalog, TransactionManager &manager, ClientContext &context);
+	CommitContextScope(DeltaTransaction &transaction, ClientContext &context);
+	~CommitContextScope();
+	CommitContextScope(const CommitContextScope &) = delete;
+	CommitContextScope &operator=(const CommitContextScope &) = delete;
+
+private:
+	DeltaTransaction &transaction;
+};
+
+class DeltaTransaction : public Transaction {
+	friend class CommitContextScope;
+
+public:
+	DeltaTransaction(DeltaCatalog &delta_catalog, TransactionManager &manager, Context &context);
 	~DeltaTransaction() override;
 
 	void Start();
 	void Commit(ClientContext &context);
-	void Rollback();
+	void Rollback(ClientContext &context);
 
 	void Append(ClientContext &context, const vector<DeltaDataFile> &append_files);
 
@@ -51,7 +68,7 @@ public:
 	                                      optional_ptr<const DeltaMultiFileList> old_snapshot);
 
 	//! Removes all outstanding appends and removes the files if possible
-	void CleanUpFiles();
+	void CleanUpFiles(ClientContext &context);
 
 	//! CGetCommits callback for Unity Catalog managed commits
 	//! CCommit callback for Unity Catalog managed commits - returns None on success, Some(error) on failure
@@ -110,7 +127,8 @@ private:
 	Identifier parent_catalog_name;
 	optional_ptr<TableFunctionCatalogEntry> commit_function;
 	string unity_table_id;
-	weak_ptr<ClientContext> current_context;
+	//! Only set while a kernel commit call is running (see CommitContextScope), read by CommitCallback
+	optional_ptr<ClientContext> commit_context;
 	optional_ptr<TableCatalogEntry> parent_table_entry;
 
 	ErrorData active_error;

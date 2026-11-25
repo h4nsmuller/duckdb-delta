@@ -73,7 +73,7 @@ virtual_column_map_t DeltaVirtualColumns(ClientContext &, optional_ptr<FunctionD
 	return result;
 }
 
-static void DeltaScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+static void DeltaScanSerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data,
                                const BoundTableFunction &function) {
 	throw NotImplementedException("DeltaScan serialization not implemented");
 }

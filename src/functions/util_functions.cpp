@@ -12,7 +12,7 @@ namespace duckdb {
 static void GetWriteDataFunction(DataChunk &input, ExpressionState &state, Vector &output) {
 	output.SetVectorType(VectorType::CONSTANT_VECTOR);
 	vector<Value> result_to_string;
-	auto &fs = FileSystem::GetFileSystem(state.GetContext());
+	auto &fs = FileSystem::GetFileSystem(state.GetClientContext());
 
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    input.data[0], input.data[1], output, input.size(), [&](string_t path, string_t blob) {

@@ -7,6 +7,7 @@
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_data.hpp"
@@ -239,8 +240,12 @@ static void CastNaiveTimestampsAsUtc(ClientContext &context, unique_ptr<Expressi
 			// holds an interval kind goes through the kind's storage type first, then the registered casts
 			auto storage = DeltaInterval::ToStorageType(target);
 			auto try_cast = BoundCastExpression::IsTryCast(cast);
-			expr = BoundCastExpression::AddDefaultCastToType(std::move(BoundCastExpression::ChildMutable(cast)),
-			                                                 storage, try_cast);
+			auto &child = BoundCastExpression::ChildMutable(cast);
+			CastFunctionSet default_casts;
+			auto get_input = GetCastFunctionInput::Default();
+			get_input.query_location = child->GetQueryLocation();
+			auto bound_cast = default_casts.GetCastFunction(child->GetReturnType(), storage, get_input);
+			expr = BoundCastExpression::Create(std::move(child), storage, std::move(bound_cast), try_cast);
 			if (storage != target) {
 				expr = BoundCastExpression::AddCastToType(context, std::move(expr), target, try_cast);
 			}

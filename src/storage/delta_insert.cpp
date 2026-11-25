@@ -143,7 +143,8 @@ public:
 	}
 
 	static void Register(ClientContext &context, const shared_ptr<DeltaCreateTableAsState> &state) {
-		context.registered_state->Insert(Key(*state), make_shared_ptr<DeltaCreateTableAsCleanup>(state));
+		context.GetContext().GetRegisteredState().Insert(Key(*state),
+		                                                 make_shared_ptr<DeltaCreateTableAsCleanup>(state));
 	}
 
 	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
@@ -154,7 +155,7 @@ public:
 			state->CleanUp(context);
 			context.interrupt_state = interrupt_state;
 		}
-		context.registered_state->Remove(Key(*state));
+		context.GetContext().GetRegisteredState().Remove(Key(*state));
 	}
 
 private:

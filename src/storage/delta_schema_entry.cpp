@@ -173,11 +173,6 @@ optional_ptr<CatalogEntry> DeltaSchemaEntry::CreatePragmaFunction(CatalogTransac
 	throw BinderException("Delta databases do not support creating pragma functions");
 }
 
-optional_ptr<CatalogEntry> DeltaSchemaEntry::CreateCollation(CatalogTransaction transaction,
-                                                             CreateCollationInfo &info) {
-	throw BinderException("Delta databases do not support creating collations");
-}
-
 void DeltaSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 	throw NotImplementedException("Delta tables do not support altering");
 }

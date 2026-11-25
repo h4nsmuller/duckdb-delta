@@ -29,7 +29,7 @@
 
 namespace duckdb {
 
-DeltaTransaction::DeltaTransaction(DeltaCatalog &delta_catalog, TransactionManager &manager, ClientContext &context)
+DeltaTransaction::DeltaTransaction(DeltaCatalog &delta_catalog, TransactionManager &manager, Context &context)
     : Transaction(manager, context), access_mode(delta_catalog.access_mode), parent_commit(delta_catalog.parent_commit),
       parent_catalog_name(delta_catalog.parent_catalog_name), unity_table_id(delta_catalog.unity_table_id) {
 	commit_function = delta_catalog.commit_function;
@@ -289,16 +289,22 @@ KernelEngineData CreateAddFilesEngineData(ClientContext &context, const string &
 	return KernelEngineData(engine_data);
 }
 
-void DeltaTransaction::CleanUpFiles() {
+void DeltaTransaction::CleanUpFiles(ClientContext &context) {
 	// Clean up the files created by this transaction
-	auto context_ptr = context.lock();
-	if (context_ptr) {
-		for (const auto &append : outstanding_appends) {
-			auto &fs = FileSystem::GetFileSystem(*context_ptr);
-			fs.TryRemoveFile(append.file_name);
-		}
+	auto &fs = FileSystem::GetFileSystem(context);
+	for (const auto &append : outstanding_appends) {
+		fs.TryRemoveFile(append.file_name);
 	}
 	outstanding_appends.clear();
+}
+
+CommitContextScope::CommitContextScope(DeltaTransaction &transaction_p, ClientContext &context)
+    : transaction(transaction_p) {
+	transaction.commit_context = context;
+}
+
+CommitContextScope::~CommitContextScope() {
+	transaction.commit_context = optional_ptr<ClientContext>();
 }
 
 ffi::OptionalValue<ffi::Handle<ffi::ExclusiveRustString>> DeltaTransaction::CommitCallback(ffi::NullableCvoid context,
@@ -316,10 +322,10 @@ ffi::OptionalValue<ffi::Handle<ffi::ExclusiveRustString>> DeltaTransaction::Comm
 	}
 
 	try {
-		auto current_context = transaction->current_context.lock();
-		if (!current_context) {
-			throw InternalException("No current client context in Catalog Commit Callback");
+		if (!transaction->commit_context) {
+			throw InternalException("Catalog Commit Callback invoked outside of a kernel commit call");
 		}
+		auto &current_context = *transaction->commit_context;
 		if (!transaction->write_entry) {
 			throw InternalException("No write entry in Catalog Commit Callback");
 		}
@@ -352,13 +358,13 @@ ffi::OptionalValue<ffi::Handle<ffi::ExclusiveRustString>> DeltaTransaction::Comm
 
 		auto staged_commit_data = Value::STRUCT(children);
 
-		DUCKDB_LOG_INTERNAL(*current_context, "delta.CatalogManagedCommit", LogLevel::LOG_DEBUG,
+		DUCKDB_LOG_INTERNAL(current_context, "delta.CatalogManagedCommit", LogLevel::LOG_DEBUG,
 		                    staged_commit_data.ToString());
 
 		// Invoke the commit function on the catalog
 		DataChunk output;
 		TableFunctionInput data = {nullptr, nullptr, nullptr};
-		output.Initialize(*current_context, {staged_commit_data.type(), LogicalType::BOOLEAN}, 1);
+		output.Initialize(current_context, {staged_commit_data.type(), LogicalType::BOOLEAN}, 1);
 		output.SetValue(0, 0, staged_commit_data);
 		output.SetCardinality(1);
 
@@ -367,7 +373,7 @@ ffi::OptionalValue<ffi::Handle<ffi::ExclusiveRustString>> DeltaTransaction::Comm
 		}
 		// Special function that expects a 2-sized ANY datachunk containing the input on row 1 that will place the
 		// output on row 2
-		transaction->commit_function->functions.functions[0]->function(*current_context, data, output);
+		transaction->commit_function->functions.functions[0]->function(current_context, data, output);
 
 		auto result = output.GetValue(1, 0);
 		if (result.IsNull()) {
@@ -464,6 +470,7 @@ void DeltaTransaction::Commit(ClientContext &context) {
 
 			DUCKDB_LOG_INTERNAL(context, "delta.Commit", LogLevel::LOG_DEBUG, "Committing %s",
 			                    table_entry->snapshot->GetPath());
+			CommitContextScope commit_scope(*this, context);
 			auto res = KernelUtils::TryUnpackResult(
 			    ffi::update_table_txn_commit(kernel_transaction.release(), table_entry->snapshot->extern_engine.get()),
 			    commit_result);
@@ -480,10 +487,10 @@ void DeltaTransaction::Commit(ClientContext &context) {
 	}
 }
 
-void DeltaTransaction::Rollback() {
+void DeltaTransaction::Rollback(ClientContext &context) {
 	if (transaction_state == DeltaTransactionState::TRANSACTION_STARTED) {
 		transaction_state = DeltaTransactionState::TRANSACTION_FINISHED;
-		CleanUpFiles();
+		CleanUpFiles(context);
 	}
 }
 
@@ -512,8 +519,6 @@ ffi::Handle<ffi::MutableCommitter> DeltaTransaction::CreateCatalogCommitter(cons
 }
 
 void DeltaTransaction::InitializeTransaction(ClientContext &context) {
-	current_context = context.shared_from_this();
-
 	if (access_mode == AccessMode::READ_ONLY) {
 		throw InvalidInputException("Can not append to a read only table");
 	}
